@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate serde;
 use candid::{Decode, Encode};
+use ic_cdk::api::time;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BoundedStorable, Cell, DefaultMemoryImpl, StableBTreeMap, Storable};
 use std::{borrow::Cow, cell::RefCell};
@@ -14,37 +15,13 @@ type IdCell = Cell<u64, Memory>;
 struct Patient {
     id: u64,
     name: String,
-    blood_group: String,
-    hospital: String,
-    description: String,
-    needed_pints: u32,
-    donations: u32,
+    history: String,
     password: String,
-    is_complete: bool,
-    donors_ids: Vec<u64>,
+    doctors_ids: Vec<u64>,
+    hospitals_ids: Vec<u64>,
 }
 
-#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
-struct Hospital {
-    id: u64,
-    name: String,
-    address: String,
-    password: String,
-    city: String,
-    donations: u32,
-    donors_ids: Vec<u64>,
-}
-
-#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
-struct Donor {
-    id: u64,
-    name: String,
-    password: String,
-    blood_group: String,
-    beneficiaries: Vec<u64>,
-}
-
-// Implement the 'Storable' trait for 'Hospital', 'Patient' and 'CommunityHospital'
+// Implement the 'Storable' traits
 
 impl Storable for Patient {
     // Conversion to bytes
@@ -55,6 +32,16 @@ impl Storable for Patient {
     fn from_bytes(bytes: Cow<[u8]>) -> Self {
         Decode!(bytes.as_ref(), Self).unwrap()
     }
+}
+
+#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
+struct Hospital {
+    id: u64,
+    name: String,
+    address: String,
+    password: String,
+    patients_ids: Vec<u64>,
+    doctors_ids: Vec<u64>,
 }
 
 impl Storable for Hospital {
@@ -68,7 +55,16 @@ impl Storable for Hospital {
     }
 }
 
-impl Storable for Donor {
+#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
+struct Doctor {
+    id: u64,
+    name: String,
+    password: String,
+    hospital_id: u64,
+    patient_ids: Vec<u64>,
+}
+
+impl Storable for Doctor {
     // Conversion to bytes
     fn to_bytes(&self) -> Cow<[u8]> {
         Cow::Owned(Encode!(self).unwrap())
@@ -79,7 +75,7 @@ impl Storable for Donor {
     }
 }
 
-// Implement the 'BoundedStorable' trait for 'Hospital', 'Patient' and 'CommunityHospital'
+// Implement the 'BoundedStorable' traits
 impl BoundedStorable for Patient {
     const MAX_SIZE: u32 = 1024;
     const IS_FIXED_SIZE: bool = false;
@@ -90,7 +86,7 @@ impl BoundedStorable for Hospital {
     const IS_FIXED_SIZE: bool = false;
 }
 
-impl BoundedStorable for Donor {
+impl BoundedStorable for Doctor {
     const MAX_SIZE: u32 = 1024;
     const IS_FIXED_SIZE: bool = false;
 }
@@ -116,7 +112,7 @@ thread_local! {
             MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(3)))
     ));
 
-    static DONOR_STORAGE: RefCell<StableBTreeMap<u64, Donor, Memory>> =
+    static DOCTOR_STORAGE: RefCell<StableBTreeMap<u64, Doctor, Memory>> =
         RefCell::new(StableBTreeMap::init(
             MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(5)))
     ));
@@ -137,27 +133,47 @@ struct HospitalPayload {
 struct PatientPayload {
     #[validate(length(min = 3))]
     name: String,
-    blood_group: String,
     #[validate(length(min = 6))]
-    description: String,
+    history: String,
     password: String,
-    hospital: String,
-    needed_pints: u32,
 }
 
 #[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
 struct EditPatientPayload {
-    patient_id: u64,
-    needed_pints: u32,
+    name: String,
     password: String,
-    is_complete: bool,
+    patient_id: u64,
+}
+
+#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
+struct AddPatientToDoctor {
+    doctor_id: u64,
+    patient_id: u64,
+    doctor_password: String,
+    patient_password: String,
+}
+
+#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
+struct PatientHistoryUpdate {
+    doctor_id: u64,
+    patient_id: u64,
+    doctor_password: String,
+    new_history: String,
+}
+
+#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
+struct AddDoctorToHospital {
+    doctor_id: u64,
+    hospital_id: u64,
+    doctor_password: String,
+    hospital_password: String,
 }
 
 #[derive(candid::CandidType, Clone, Serialize, Deserialize, Default, Validate)]
-struct DonorPayload {
+struct DoctorPayload {
     #[validate(length(min = 3))]
     name: String,
-    blood_group: String,
+    hospital_id: u64,
     #[validate(length(min = 4))]
     password: String,
 }
@@ -170,11 +186,10 @@ struct EditHospitalPayload {
 }
 
 #[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
-struct PledgePayload {
-    donor_id: u64,
-    recipient_id: u64,
-    pints_pledge: u32,
-    password: String,
+struct AccessPayload {
+    doctor_id: u64,
+    patient_id: u64,
+    doctor_password: String,
 }
 
 // Query function to get all hospitals
@@ -202,23 +217,19 @@ fn get_all_hospitals() -> Result<Vec<Hospital>, Error> {
 
 // Get Hospitals by city and name content
 #[ic_cdk::query]
-fn get_hospital_by_city_and_name(search: String) -> Result<Vec<Hospital>, Error> {
+fn get_hospital_by_name(search: String) -> Result<Vec<Hospital>, Error> {
     let query = search.to_lowercase();
     // Retrieve all Hospitals from the storage
     let hospital_map: Vec<(u64, Hospital)> = HOSPITAL_STORAGE.with(|s| s.borrow().iter().collect());
-    // Extract the Hospitals from the tuple and create a vector
     let hospitals: Vec<Hospital> = hospital_map
         .into_iter()
         .map(|(_, hospital)| hospital)
         .collect();
 
-    // Filter the hospitals by city or name
+    // Filter the hospitals by name
     let incomplete_patients: Vec<Hospital> = hospitals
         .into_iter()
-        .filter(|hospital| {
-            (hospital.city).to_lowercase().contains(&query)
-                || (hospital.name).to_lowercase().contains(&query)
-        })
+        .filter(|hospital| (hospital.name).to_lowercase().contains(&query))
         .map(|hospital| Hospital {
             password: "******".to_string(),
             ..hospital
@@ -228,10 +239,7 @@ fn get_hospital_by_city_and_name(search: String) -> Result<Vec<Hospital>, Error>
     // Check if any hospitals are found
     match incomplete_patients.len() {
         0 => Err(Error::NotFound {
-            msg: format!(
-                "no Food hospitals for city or name: {} could be found",
-                query
-            ),
+            msg: format!("No hospitals for name: {} could be found", query),
         }),
         _ => Ok(incomplete_patients),
     }
@@ -273,10 +281,9 @@ fn add_hospital(payload: HospitalPayload) -> Result<Hospital, Error> {
         id,
         name: payload.name.clone(),
         address: payload.address,
-        city: payload.city,
         password: payload.password,
-        donations: 0,
-        donors_ids: vec![],
+        patients_ids: vec![],
+        doctors_ids: vec![],
     };
 
     match HOSPITAL_STORAGE.with(|s| s.borrow_mut().insert(id, hospital.clone())) {
@@ -321,66 +328,170 @@ fn edit_hospital(payload: EditHospitalPayload) -> Result<Hospital, Error> {
     }
 }
 
-// function to pledge to hospital
+// function to assign patient to doctor and add patient to doctor's hospital
 #[ic_cdk::update]
-fn pledge_to_hospital(payload: PledgePayload) -> Result<String, Error> {
-    // get hospital
-    let hospital = HOSPITAL_STORAGE.with(|hospitals| hospitals.borrow().get(&payload.recipient_id));
-    match hospital {
-        Some(hospital) => {
-            // check if the password provided matches hospital
-            if hospital.password != payload.password {
+fn assign_patient_to_doctor(payload: AddPatientToDoctor) -> Result<String, Error> {
+    // get patient
+    let doctor = DOCTOR_STORAGE.with(|doctors| doctors.borrow().get(&payload.doctor_id));
+    match doctor {
+        Some(doctor) => {
+            if doctor.password != payload.doctor_password {
                 return Err(Error::Unauthorized {
-                    msg: format!("Unauthorized, password does not match, try again"),
+                    msg: format!("Doctor Access unauthorized, password does not match, try again"),
                 });
             }
-
-            // check if donor has enough balance
-            let donor = DONOR_STORAGE.with(|donors| donors.borrow().get(&payload.donor_id));
-            match donor {
-                Some(donor) => {
-                    let mut new_donor_beneficiaries = donor.beneficiaries.clone();
-                    new_donor_beneficiaries.push(hospital.id);
-                    let new_donor = Donor {
-                        beneficiaries: new_donor_beneficiaries,
-                        ..donor
+            let patient =
+                PATIENT_STORAGE.with(|patients| patients.borrow().get(&payload.patient_id));
+            match patient {
+                Some(patient) => {
+                    // check if the password provided matches patient
+                    if patient.password != payload.patient_password {
+                        return Err(Error::Unauthorized {
+                            msg: format!(
+                                "Patient access unauthorized, password does not match, try again"
+                            ),
+                        });
+                    }
+                    let mut new_doctor_patient_ids = doctor.patient_ids.clone();
+                    new_doctor_patient_ids.push(patient.id);
+                    let new_doctor = Doctor {
+                        patient_ids: new_doctor_patient_ids,
+                        name: doctor.name.clone(),
+                        ..doctor
                     };
-                    // update donor in storage
-                    match DONOR_STORAGE.with(|s| s.borrow_mut().insert(donor.id, new_donor.clone()))
-                    {
-                        Some(_) => {
-                            // update hospital
-                            let mut new_hospital_donors_ids = hospital.donors_ids.clone();
-                            new_hospital_donors_ids.push(donor.id);
-                            let new_hospital = Hospital {
-                                donors_ids: new_hospital_donors_ids,
-                                ..hospital.clone()
-                            };
-                            // update hospital in storage
-                            match HOSPITAL_STORAGE
-                                .with(|s| s.borrow_mut().insert(hospital.id, new_hospital.clone()))
+                    // add patient to hospital
+                    match add_patient_to_hospital(doctor.hospital_id, patient.id) {
+                        Ok(_) => {
+                            // update doctor in storage
+                            match DOCTOR_STORAGE
+                                .with(|s| s.borrow_mut().insert(doctor.id, new_doctor.clone()))
                             {
-                                Some(_) => Ok(format!(
-                                    "Succesfully pledged to hospital {}, visit address: {} to donate",
-                                    hospital.name, hospital.address
-                                )),
+                                Some(_) => {
+                                    // update patient
+                                    let mut new_patient_doctors_ids = patient.doctors_ids.clone();
+                                    new_patient_doctors_ids.push(doctor.id);
+                                    let new_patient = Patient {
+                                        doctors_ids: new_patient_doctors_ids,
+                                        ..patient.clone()
+                                    };
+                                    // update patient in storage
+                                    match PATIENT_STORAGE
+                                        .with(|s| s.borrow_mut().insert(patient.id, new_patient.clone()))
+                                    {
+                                        Some(_) => Ok(format!(
+                                            "Succesfully assigned patient {} to doctor: {} and hospital: {} ",
+                                            patient.name, doctor.name, doctor.hospital_id
+                                        )),
+                                        None => Err(Error::InvalidPayload {
+                                            msg: format!("Could not update patient"),
+                                        }),
+                                    }
+                                }
                                 None => Err(Error::InvalidPayload {
-                                    msg: format!("Could not update hospital"),
+                                    msg: format!("Could not update doctor"),
                                 }),
                             }
                         }
-                        None => Err(Error::InvalidPayload {
-                            msg: format!("Could not update donor"),
-                        }),
+                        Err(e) => Err(e),
                     }
                 }
                 None => Err(Error::NotFound {
-                    msg: format!("Donor of id: {} not found", payload.donor_id),
+                    msg: format!("Doctor of id: {} not found", payload.doctor_id),
                 }),
             }
         }
         None => Err(Error::NotFound {
-            msg: format!("hospital of id: {} not found", payload.recipient_id),
+            msg: format!("patient of id: {} not found", payload.patient_id),
+        }),
+    }
+}
+
+// helper function to add patient to hospital
+fn add_patient_to_hospital(hospital_id: u64, patient_id: u64) -> Result<(), Error> {
+    // get hospital
+    let hospital = HOSPITAL_STORAGE.with(|hospitals| hospitals.borrow().get(&hospital_id));
+    // get doctor
+    match hospital {
+        Some(hospital) => {
+            // add patient Id to hospital patients
+            let mut new_hospital_patients_ids = hospital.patients_ids.clone();
+            new_hospital_patients_ids.push(patient_id);
+            let new_hospital = Hospital {
+                patients_ids: new_hospital_patients_ids,
+                ..hospital.clone()
+            };
+            // update hospital in storage
+            match HOSPITAL_STORAGE
+                .with(|s| s.borrow_mut().insert(hospital.id, new_hospital.clone()))
+            {
+                Some(_) => Ok(()),
+                None => Err(Error::InvalidPayload {
+                    msg: format!("Could not update hospital"),
+                }),
+            }
+        }
+        None => Err(Error::NotFound {
+            msg: format!("hospital of id: {} not found", hospital_id),
+        }),
+    }
+}
+
+// function to add to patients medical history by patient's doctor. authorizations is by doctor password
+#[ic_cdk::update]
+fn update_patient_history(payload: PatientHistoryUpdate) -> Result<String, Error> {
+    // get patient
+    let doctor = DOCTOR_STORAGE.with(|doctors| doctors.borrow().get(&payload.doctor_id));
+    match doctor {
+        Some(doctor) => {
+            if doctor.password != payload.doctor_password {
+                return Err(Error::Unauthorized {
+                    msg: format!("Doctor Access unauthorized, password does not match, try again"),
+                });
+            }
+            let patient =
+                PATIENT_STORAGE.with(|patients| patients.borrow().get(&payload.patient_id));
+            match patient {
+                Some(patient) => {
+                    // check if the password provided matches patient
+                    if patient.doctors_ids.contains(&doctor.id) == false {
+                        return Err(Error::Unauthorized {
+                            msg: format!(
+                                "Patient access unauthorized, doctor is not assigned to patient, try again"
+                            ),
+                        });
+                    }
+                    let new_patient = Patient {
+                        // add new history to patient.history with current time and doctor id
+                        history: format!(
+                            "{} \n Doctor {} : {} at {} \n {}",
+                            patient.history,
+                            doctor.id,
+                            { doctor.name },
+                            time(),
+                            payload.new_history
+                        ),
+                        ..patient.clone()
+                    };
+                    // update patient in storage
+                    match PATIENT_STORAGE
+                        .with(|s| s.borrow_mut().insert(patient.id, new_patient.clone()))
+                    {
+                        Some(_) => Ok(format!(
+                            "Succesfully updated patient {} history",
+                            patient.name
+                        )),
+                        None => Err(Error::InvalidPayload {
+                            msg: format!("Could not update patient"),
+                        }),
+                    }
+                }
+                None => Err(Error::NotFound {
+                    msg: format!("Doctor of id: {} not found", payload.doctor_id),
+                }),
+            }
+        }
+        None => Err(Error::NotFound {
+            msg: format!("patient of id: {} not found", payload.patient_id),
         }),
     }
 }
@@ -391,6 +502,7 @@ fn get_patient(id: u64) -> Result<Patient, Error> {
     match PATIENT_STORAGE.with(|patients| patients.borrow().get(&id)) {
         Some(patient) => Ok(Patient {
             password: "******".to_string(),
+            history: "******".to_string(),
             ..patient
         }),
         None => Err(Error::NotFound {
@@ -399,38 +511,43 @@ fn get_patient(id: u64) -> Result<Patient, Error> {
     }
 }
 
-// Query function to get all for incomplete donations patients
+// query function for doctor to get patient info by patient id and doctor password
 #[ic_cdk::query]
-fn get_incomplete_donation_patients() -> Result<Vec<Patient>, Error> {
-    // Retrieve all Patients from the storage
-    let patients_map: Vec<(u64, Patient)> = PATIENT_STORAGE.with(|s| s.borrow().iter().collect());
-    // Extract the Patients from the tuple and create a vector
-    let patients: Vec<Patient> = patients_map
-        .into_iter()
-        .map(|(_, patient)| patient)
-        .collect();
-
-    // Filter the patients by category
-    let incomplete_patients: Vec<Patient> = patients
-        .into_iter()
-        .filter(|patient| !patient.is_complete)
-        .collect();
-
-    // convert to Patient struct
-    let return_patients: Vec<Patient> = incomplete_patients
-        .into_iter()
-        .map(|patient| Patient {
-            password: "******".to_string(),
-            ..patient
-        })
-        .collect();
-
-    // Check if any patients are found
-    match return_patients.len() {
-        0 => Err(Error::NotFound {
-            msg: format!("No patients for donations could be found"),
+fn get_patient_info(payload: AccessPayload) -> Result<Patient, Error> {
+    // get patient
+    let doctor = DOCTOR_STORAGE.with(|doctors| doctors.borrow().get(&payload.doctor_id));
+    match doctor {
+        Some(doctor) => {
+            if doctor.password != payload.doctor_password {
+                return Err(Error::Unauthorized {
+                    msg: format!("Doctor Access unauthorized, password does not match, try again"),
+                });
+            }
+            let patient =
+                PATIENT_STORAGE.with(|patients| patients.borrow().get(&payload.patient_id));
+            match patient {
+                Some(patient) => {
+                    // check if the password provided matches patient
+                    if patient.doctors_ids.contains(&doctor.id) == false {
+                        return Err(Error::Unauthorized {
+                            msg: format!(
+                                "Patient access unauthorized, doctor is not assigned to patient, try again"
+                            ),
+                        });
+                    }
+                    Ok(Patient {
+                        password: "******".to_string(),
+                        ..patient.clone()
+                    })
+                }
+                None => Err(Error::NotFound {
+                    msg: format!("Doctor of id: {} not found", payload.doctor_id),
+                }),
+            }
+        }
+        None => Err(Error::NotFound {
+            msg: format!("patient of id: {} not found", payload.patient_id),
         }),
-        _ => Ok(return_patients),
     }
 }
 
@@ -455,14 +572,10 @@ fn add_patient(payload: PatientPayload) -> Result<Patient, Error> {
     let patient = Patient {
         id,
         name: payload.name.clone(),
-        description: payload.description,
-        blood_group: payload.blood_group,
-        needed_pints: payload.needed_pints,
-        hospital: payload.hospital,
-        donations: 0,
+        history: payload.history,
         password: payload.password,
-        is_complete: false,
-        donors_ids: vec![],
+        doctors_ids: vec![],
+        hospitals_ids: vec![],
     };
 
     match PATIENT_STORAGE.with(|s| s.borrow_mut().insert(id, patient.clone())) {
@@ -472,6 +585,8 @@ fn add_patient(payload: PatientPayload) -> Result<Patient, Error> {
         }),
     }
 }
+
+// add patient to hospital
 
 // update function to edit a patient where authorizations is by password
 #[ic_cdk::update]
@@ -488,8 +603,7 @@ fn edit_patient(payload: EditPatientPayload) -> Result<Patient, Error> {
             }
 
             let new_patient = Patient {
-                needed_pints: payload.needed_pints,
-                is_complete: payload.is_complete,
+                name: payload.name,
                 ..patient.clone()
             };
 
@@ -506,80 +620,9 @@ fn edit_patient(payload: EditPatientPayload) -> Result<Patient, Error> {
     }
 }
 
-// function to pledge to patient
+// add doctor
 #[ic_cdk::update]
-fn pledge_to_patient(payload: PledgePayload) -> Result<String, Error> {
-    // get patient
-    let patient = PATIENT_STORAGE.with(|patients| patients.borrow().get(&payload.recipient_id));
-    match patient {
-        Some(patient) => {
-            // check if the password provided matches patient
-            if patient.password != payload.password {
-                return Err(Error::Unauthorized {
-                    msg: format!("Unauthorized, password does not match, try again"),
-                });
-            }
-
-            // check if donor has enough balance
-            let donor = DONOR_STORAGE.with(|donors| donors.borrow().get(&payload.donor_id));
-            match donor {
-                Some(donor) => {
-                    if donor.beneficiaries.len() + 1 > patient.needed_pints as usize {
-                        return Err(Error::InvalidPayload {
-                            msg: format!(
-                                "Patient has already reached their needed donation target"
-                            ),
-                        });
-                    }
-                    let mut new_donor_beneficiaries = donor.beneficiaries.clone();
-                    new_donor_beneficiaries.push(patient.id);
-                    let new_donor = Donor {
-                        beneficiaries: new_donor_beneficiaries,
-                        ..donor
-                    };
-                    // update donor in storage
-                    match DONOR_STORAGE.with(|s| s.borrow_mut().insert(donor.id, new_donor.clone()))
-                    {
-                        Some(_) => {
-                            // update patient
-                            let mut new_patient_donors_ids = patient.donors_ids.clone();
-                            new_patient_donors_ids.push(donor.id);
-                            let new_patient = Patient {
-                                donors_ids: new_patient_donors_ids,
-                                ..patient.clone()
-                            };
-                            // update patient in storage
-                            match PATIENT_STORAGE
-                                .with(|s| s.borrow_mut().insert(patient.id, new_patient.clone()))
-                            {
-                                Some(_) => Ok(format!(
-                                    "Succesfully pledged to patient {}, visit hospital: {} to donate",
-                                    patient.name, patient.hospital
-                                )),
-                                None => Err(Error::InvalidPayload {
-                                    msg: format!("Could not update patient"),
-                                }),
-                            }
-                        }
-                        None => Err(Error::InvalidPayload {
-                            msg: format!("Could not update donor"),
-                        }),
-                    }
-                }
-                None => Err(Error::NotFound {
-                    msg: format!("Donor of id: {} not found", payload.donor_id),
-                }),
-            }
-        }
-        None => Err(Error::NotFound {
-            msg: format!("patient of id: {} not found", payload.recipient_id),
-        }),
-    }
-}
-
-// add donor
-#[ic_cdk::update]
-fn add_donor(payload: DonorPayload) -> Result<Donor, Error> {
+fn add_doctor(payload: DoctorPayload) -> Result<Doctor, Error> {
     // validate payload
     let validate_payload = payload.validate();
     if validate_payload.is_err() {
@@ -595,32 +638,103 @@ fn add_donor(payload: DonorPayload) -> Result<Donor, Error> {
         })
         .expect("Cannot increment Ids");
 
-    let donor = Donor {
+    let doctor = Doctor {
         id,
         name: payload.name.clone(),
-        blood_group: payload.blood_group,
+        hospital_id: payload.hospital_id,
         password: payload.password,
-        beneficiaries: vec![],
+        patient_ids: vec![],
     };
 
-    match DONOR_STORAGE.with(|s| s.borrow_mut().insert(id, donor.clone())) {
-        None => Ok(donor),
+    match DOCTOR_STORAGE.with(|s| s.borrow_mut().insert(id, doctor.clone())) {
+        None => Ok(doctor),
         Some(_) => Err(Error::InvalidPayload {
-            msg: format!("Could not add donor name: {}", payload.name),
+            msg: format!("Could not add doctor name: {}", payload.name),
         }),
     }
 }
 
-// get donor by ID
+// get doctor by ID
 #[ic_cdk::query]
-fn get_donor_by_id(id: u64) -> Result<Donor, Error> {
-    match DONOR_STORAGE.with(|donors| donors.borrow().get(&id)) {
-        Some(donor) => Ok(Donor {
+fn get_doctor_by_id(id: u64) -> Result<Doctor, Error> {
+    match DOCTOR_STORAGE.with(|doctors| doctors.borrow().get(&id)) {
+        Some(doctor) => Ok(Doctor {
             password: "******".to_string(),
-            ..donor
+            ..doctor
         }),
         None => Err(Error::NotFound {
-            msg: format!("donor id:{} does not exist", id),
+            msg: format!("doctor id:{} does not exist", id),
+        }),
+    }
+}
+
+// add doctor to hospital
+#[ic_cdk::update]
+fn add_doctor_to_hospital(payload: AddDoctorToHospital) -> Result<String, Error> {
+    // get doctor
+    let doctor = DOCTOR_STORAGE.with(|doctors| doctors.borrow().get(&payload.doctor_id));
+    match doctor {
+        Some(doctor) => {
+            if doctor.password != payload.doctor_password {
+                return Err(Error::Unauthorized {
+                    msg: format!("Doctor Access unauthorized, password does not match, try again"),
+                });
+            }
+            let hospital =
+                HOSPITAL_STORAGE.with(|hospitals| hospitals.borrow().get(&payload.hospital_id));
+            match hospital {
+                Some(hospital) => {
+                    // check if the password provided matches hospital
+                    if hospital.password != payload.hospital_password {
+                        return Err(Error::Unauthorized {
+                            msg: format!(
+                                "Hospital access unauthorized, password does not match, try again"
+                            ),
+                        });
+                    }
+                    let mut new_hospital_doctors_ids = hospital.doctors_ids.clone();
+                    new_hospital_doctors_ids.push(doctor.id);
+                    let new_hospital = Hospital {
+                        doctors_ids: new_hospital_doctors_ids,
+                        name: hospital.name.clone(),
+                        ..hospital.clone()
+                    };
+                    // update hospital in storage
+                    match HOSPITAL_STORAGE
+                        .with(|s| s.borrow_mut().insert(hospital.id, new_hospital.clone()))
+                    {
+                        Some(_) => {
+                            // update doctor
+                            let new_doctor = Doctor {
+                                hospital_id: hospital.id,
+                                name: doctor.name.clone(),
+                                ..doctor.clone()
+                            };
+                            // update doctor in storage
+                            match DOCTOR_STORAGE
+                                .with(|s| s.borrow_mut().insert(doctor.id, new_doctor.clone()))
+                            {
+                                Some(_) => Ok(format!(
+                                    "Succesfully assigned doctor {} to hospital: {} ",
+                                    doctor.name, hospital.name
+                                )),
+                                None => Err(Error::InvalidPayload {
+                                    msg: format!("Could not update doctor"),
+                                }),
+                            }
+                        }
+                        None => Err(Error::InvalidPayload {
+                            msg: format!("Could not update hospital"),
+                        }),
+                    }
+                }
+                None => Err(Error::NotFound {
+                    msg: format!("Hospital of id: {} not found", payload.hospital_id),
+                }),
+            }
+        }
+        None => Err(Error::NotFound {
+            msg: format!("doctor of id: {} not found", payload.doctor_id),
         }),
     }
 }
