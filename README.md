@@ -1,107 +1,121 @@
-# Recipe Marketplace
+# Patient Record Access System
 
-## Overview
+This smart contract facilitates the management of a blood donation drive, allowing hospitals, patients, and donors to participate. It provides functions for adding entities, querying information, and handling pledges. The code incorporates validation and clear error messages to ensure the integrity of the data and the security of the smart contract.
 
-This Rust Smart contract implements a recipe marketplace on the Internet Computer, allowing users to create, edit, and trade recipes. It leverages the Internet Computer's smart contract capabilities to manage user accounts, recipe storage, and transactions. The primary use case involves creating, sharing, and trading recipes within a decentralized marketplace. Users can contribute to community recipes, purchase non-community recipes, and manage their balances.
+## Structure
 
-## Prerequisites
+### 1. Struct Definitions
 
-- Rust programming language (version X.X.X)
-- DFINITY Canister SDK
-- Internet Computer access
+#### Patient
 
-## Installation
+- **Attributes:**
+  - `id`, `name`, `blood_group`, `hospital`, `description`, `needed_pints`, `donations`, `password`, `is_complete`, `donors_ids`.
+- Represents information about a patient in need of blood donation.
 
-1. Clone the repository:
+#### Hospital
 
-   ```bash
-   git clone https://github.com/Mhezron/recipe-nft-marketplace.git
-   cd recipe-nft-marketplace
+- **Attributes:**
+  - `id`, `name`, `address`, `password`, `city`, `donations`, `donors_ids`.
+- Represents a hospital participating in the blood donation drive.
 
-## Memory Management
+#### Donor
 
-Memory is allocated using a `MemoryManager` from the `ic-stable-structures` crate:
+- **Attributes:**
+  - `id`, `name`, `password`, `blood_group`, `beneficiaries`.
+- Represents an individual willing to donate blood.
 
-```rust
-static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = // initialized
-```
+### 2. Storable and BoundedStorable Implementations
 
-This manages allocating `VirtualMemory` for storages.
+- `Storable` and `BoundedStorable` traits are implemented for serialization and deserialization of patient, hospital, and donor data.
 
-## ID Generation
+### 3. Memory Management and Storage
 
-Unique IDs are generated using a thread-local `IdCell`:
+- Utilizes a thread-local static variable for managing memory and ID generation.
+- Uses `StableBTreeMap` for stable storage of patient, hospital, and donor data.
 
-```rust
-static ID_COUNTER: RefCell<IdCell> = // initialized
-```
+### 4. Payload Structs
 
-The counter is incremented when adding new records.
+#### HospitalPayload
 
-## Record Storage
+- Payload structure for adding a new hospital.
 
-Records are stored in thread-local `StableBTreeMap`s:
+#### PatientPayload
 
-The system utilizes thread-local static variables for memory management and storage. These include:
+- Payload structure for adding a new patient.
 
-- **MEMORY_MANAGER**: Manages virtual memory.
-- **ID_COUNTER**: Manages unique IDs.
-- **USER_STORAGE**: Stores clients.
+#### EditPatientPayload
 
-```rust
-static CLIENT_STORAGE: RefCell<StableBTreeMap<u64, User>> = // initialized
-```
+- Payload structure for editing patient attributes.
 
-## Traits
+#### DonorPayload
 
-The `Storable` and `BoundedStorable` traits are implemented for serialization and bounding record sizes during storage.
+- Payload structure for adding a new donor.
 
-### Main Structs
+#### EditHospitalPayload
 
-- **User:** Represents a user in the marketplace with details such as name, email, balance, and recipes.
-- **Recipe:** Defines a recipe with attributes like title, description, category, and price.
+- Payload structure for editing hospital attributes.
 
-### Payload Structs
+#### PledgePayload
 
-- **RecipePayload:** Used for adding and editing recipes.
-- **UserPayload:** Payload for adding new users.
-- **ReviewPayload:** Payload for adding recipe reviews.
-- **InitPayload:** Initial payload for contract initialization.
-- **EditRecipePayload:** Payload for editing owned recipes.
-- **EditCommunityRecipe:** Payload for editing community recipes.
-- **ReturnUser:** Struct for returning user information.
-- **BuyNftPayload:** Payload for buying a non-community recipe.
+- Payload structure for a donor pledging to a hospital or patient.
 
-### Core Functions
+### 5. Query Functions
 
-#### Query Functions
+#### get_all_hospitals
 
-1. `get_all_recipes:` Retrieve all recipes from the marketplace.
-2. `get_all_for_sale_recipes:` Retrieve recipes available for sale.
-3. `get_recipe_by_category:` Retrieve recipes by category or title.
-4. `get_recipe_by_id:` Retrieve a specific recipe by its unique ID.
-5. `get_user:` Retrieve user information by ID.
+- Retrieves a list of all hospitals.
 
-#### Update Functions
+#### get_hospital_by_city_and_name
 
-1. `add_recipe:` Add a new recipe to the marketplace.
-2. `edit_owned_recipe:` Edit owned recipes (title, is_community, price, description).
-3. `edit_community_recipe:` Edit community recipes (description only).
-4. `buy_patient_records:` Buy a non-community recipe.
-5. `transfer_recipe_to_user:` Transfer ownership of a recipe to a new user.
-6. `add_user:` Add a new user to the marketplace.
+- Retrieves hospitals based on city or name.
 
-### Error Handling
+#### get_hospital_by_id
 
-- **Error:** Enum for handling various error scenarios, including not found, already paid, invalid payload, and unauthorized access.
+- Retrieves a hospital by ID.
 
-### Candid Interface
+#### get_patient
 
-- Exported Candid interface for seamless interaction with the Internet Computer.
+- Retrieves a patient by ID.
 
-## More
+#### get_incomplete_donation_patients
 
-To get started, you might want to explore the project directory structure and the default configuration file. Working with this project in your development environment will not affect any production deployment or identity tokens.
+- Retrieves a list of patients still in need of blood donations.
+
+### 6. Update Functions
+
+#### add_hospital
+
+- Adds a new hospital to the system.
+
+#### edit_hospital
+
+- Edits hospital attributes.
+
+#### pledge_to_hospital
+
+- Handles a donor pledging to donate blood to a hospital.
+
+#### add_patient
+
+- Adds a new patient to the system.
+
+#### edit_patient
+
+- Edits patient attributes.
+
+#### pledge_to_patient
+
+- Handles a donor pledging to donate blood to a specific patient.
+
+### 7. Error Handling
+
+- Defines an `Error` enum for handling various error scenarios (not found, already initialized, invalid payload, unauthorized access).
+
+### 8. Candid Interface
+
+- Exports the Candid interface for seamless interaction with the Internet Computer.
+
+## ICP
 
 To learn more before you start working with patient_records, see the following documentation available online:
 
