@@ -202,7 +202,7 @@ fn get_all_hospitals() -> Result<Vec<Hospital>, Error> {
         .into_iter()
         .map(|(_, hospital)| hospital)
         .map(|hospital| Hospital {
-            password: "******".to_string(),
+            password: "-".to_string(),
             ..hospital
         })
         .collect();
@@ -231,7 +231,7 @@ fn get_hospital_by_name(search: String) -> Result<Vec<Hospital>, Error> {
         .into_iter()
         .filter(|hospital| (hospital.name).to_lowercase().contains(&query))
         .map(|hospital| Hospital {
-            password: "******".to_string(),
+            password: "-".to_string(),
             ..hospital
         })
         .collect();
@@ -250,7 +250,7 @@ fn get_hospital_by_name(search: String) -> Result<Vec<Hospital>, Error> {
 fn get_hospital_by_id(id: u64) -> Result<Hospital, Error> {
     match HOSPITAL_STORAGE.with(|hospitals| hospitals.borrow().get(&id)) {
         Some(hospital) => Ok(Hospital {
-            password: "******".to_string(),
+            password: "-".to_string(),
             ..hospital
         }),
         None => Err(Error::NotFound {
@@ -501,8 +501,8 @@ fn update_patient_history(payload: PatientHistoryUpdate) -> Result<String, Error
 fn get_patient(id: u64) -> Result<Patient, Error> {
     match PATIENT_STORAGE.with(|patients| patients.borrow().get(&id)) {
         Some(patient) => Ok(Patient {
-            password: "******".to_string(),
-            history: "******".to_string(),
+            password: "-".to_string(),
+            history: "-".to_string(),
             ..patient
         }),
         None => Err(Error::NotFound {
@@ -536,7 +536,7 @@ fn get_patient_info(payload: AccessPayload) -> Result<Patient, Error> {
                         });
                     }
                     Ok(Patient {
-                        password: "******".to_string(),
+                        password: "-".to_string(),
                         ..patient.clone()
                     })
                 }
@@ -659,7 +659,7 @@ fn add_doctor(payload: DoctorPayload) -> Result<Doctor, Error> {
 fn get_doctor_by_id(id: u64) -> Result<Doctor, Error> {
     match DOCTOR_STORAGE.with(|doctors| doctors.borrow().get(&id)) {
         Some(doctor) => Ok(Doctor {
-            password: "******".to_string(),
+            password: "-".to_string(),
             ..doctor
         }),
         None => Err(Error::NotFound {
