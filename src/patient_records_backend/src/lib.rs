@@ -162,7 +162,8 @@ struct PatientHistoryUpdate {
 }
 
 #[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
-struct AddDoctorToHospital {
+struct EditDoctor {
+    name: String,
     doctor_id: u64,
     hospital_id: u64,
     doctor_password: String,
@@ -176,6 +177,7 @@ struct DoctorPayload {
     hospital_id: u64,
     #[validate(length(min = 4))]
     password: String,
+    hospital_password: String,
 }
 
 #[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
@@ -486,12 +488,12 @@ fn update_patient_history(payload: PatientHistoryUpdate) -> Result<String, Error
                     }
                 }
                 None => Err(Error::NotFound {
-                    msg: format!("Doctor of id: {} not found", payload.doctor_id),
+                    msg: format!("Patient of id: {} not found", payload.patient_id),
                 }),
             }
         }
         None => Err(Error::NotFound {
-            msg: format!("patient of id: {} not found", payload.patient_id),
+            msg: format!("Doctor of id: {} not found", payload.doctor_id),
         }),
     }
 }
@@ -531,7 +533,7 @@ fn get_patient_info(payload: AccessPayload) -> Result<Patient, Error> {
                     if patient.doctors_ids.contains(&doctor.id) == false {
                         return Err(Error::Unauthorized {
                             msg: format!(
-                                "Patient access unauthorized, doctor is not assigned to patient, try again"
+                                "Patient access unauthorized, doctor is not assigned to patient, get patient permission"
                             ),
                         });
                     }
@@ -620,40 +622,6 @@ fn edit_patient(payload: EditPatientPayload) -> Result<Patient, Error> {
     }
 }
 
-// add doctor
-#[ic_cdk::update]
-fn add_doctor(payload: DoctorPayload) -> Result<Doctor, Error> {
-    // validate payload
-    let validate_payload = payload.validate();
-    if validate_payload.is_err() {
-        return Err(Error::InvalidPayload {
-            msg: validate_payload.unwrap_err().to_string(),
-        });
-    }
-
-    let id = ID_COUNTER
-        .with(|counter| {
-            let current_id = *counter.borrow().get();
-            counter.borrow_mut().set(current_id + 1)
-        })
-        .expect("Cannot increment Ids");
-
-    let doctor = Doctor {
-        id,
-        name: payload.name.clone(),
-        hospital_id: payload.hospital_id,
-        password: payload.password,
-        patient_ids: vec![],
-    };
-
-    match DOCTOR_STORAGE.with(|s| s.borrow_mut().insert(id, doctor.clone())) {
-        None => Ok(doctor),
-        Some(_) => Err(Error::InvalidPayload {
-            msg: format!("Could not add doctor name: {}", payload.name),
-        }),
-    }
-}
-
 // get doctor by ID
 #[ic_cdk::query]
 fn get_doctor_by_id(id: u64) -> Result<Doctor, Error> {
@@ -670,7 +638,97 @@ fn get_doctor_by_id(id: u64) -> Result<Doctor, Error> {
 
 // add doctor to hospital
 #[ic_cdk::update]
-fn add_doctor_to_hospital(payload: AddDoctorToHospital) -> Result<String, Error> {
+fn add_doctor(payload: DoctorPayload) -> Result<Doctor, Error> {
+    let hospital = HOSPITAL_STORAGE.with(|hospitals| hospitals.borrow().get(&payload.hospital_id));
+    match hospital {
+        Some(hospital) => {
+            // check if the password provided matches hospital
+            if hospital.password != payload.hospital_password {
+                return Err(Error::Unauthorized {
+                    msg: format!(
+                        "Hospital access unauthorized, password does not match, try again"
+                    ),
+                });
+            }
+            let validate_payload = payload.validate();
+            if validate_payload.is_err() {
+                return Err(Error::InvalidPayload {
+                    msg: validate_payload.unwrap_err().to_string(),
+                });
+            }
+
+            match add_doctor_to_storage(payload.clone()) {
+                Ok(doctor) => match add_doctor_to_hospital(doctor, hospital.clone()) {
+                    Ok(response) => Ok(response),
+                    Err(e) => Err(e),
+                },
+                Err(e) => return Err(e),
+            }
+        }
+        None => Err(Error::NotFound {
+            msg: format!("Hospital of id: {} not found", payload.hospital_id),
+        }),
+    }
+}
+
+// helper function to add doctor to storage
+fn add_doctor_to_storage(payload: DoctorPayload) -> Result<Doctor, Error> {
+    let id = ID_COUNTER
+        .with(|counter| {
+            let current_id = *counter.borrow().get();
+            counter.borrow_mut().set(current_id + 1)
+        })
+        .expect("Cannot increment Ids");
+
+    let doctor = Doctor {
+        id,
+        name: payload.name.clone(),
+        hospital_id: payload.hospital_id,
+        password: payload.password,
+        patient_ids: vec![],
+    };
+    match DOCTOR_STORAGE.with(|s| s.borrow_mut().insert(id, doctor.clone())) {
+        None => Ok(doctor),
+        Some(_) => Err(Error::InvalidPayload {
+            msg: format!("Could not add doctor name: {}", payload.name),
+        }),
+    }
+}
+
+fn add_doctor_to_hospital(doctor: Doctor, hospital: Hospital) -> Result<Doctor, Error> {
+    let mut new_hospital_doctors_ids = hospital.doctors_ids.clone();
+    new_hospital_doctors_ids.push(doctor.id);
+    let new_hospital = Hospital {
+        doctors_ids: new_hospital_doctors_ids,
+        name: hospital.name.clone(),
+        ..hospital.clone()
+    };
+    // update hospital in storage
+    match HOSPITAL_STORAGE.with(|s| s.borrow_mut().insert(hospital.id, new_hospital.clone())) {
+        Some(_) => {
+            // update doctor
+            let new_doctor = Doctor {
+                hospital_id: hospital.id,
+                name: doctor.name.clone(),
+                ..doctor.clone()
+            };
+            // update doctor in storage
+            match DOCTOR_STORAGE.with(|s| s.borrow_mut().insert(doctor.id, new_doctor.clone())) {
+                Some(_) => Ok(doctor),
+                None => Err(Error::InvalidPayload {
+                    msg: format!("Could not update doctor"),
+                }),
+            }
+        }
+        None => Err(Error::InvalidPayload {
+            msg: format!("Could not update hospital"),
+        }),
+    }
+}
+
+// add doctor to hospital
+#[ic_cdk::update]
+fn edit_doctor(payload: EditDoctor) -> Result<String, Error> {
     // get doctor
     let doctor = DOCTOR_STORAGE.with(|doctors| doctors.borrow().get(&payload.doctor_id));
     match doctor {
@@ -707,7 +765,7 @@ fn add_doctor_to_hospital(payload: AddDoctorToHospital) -> Result<String, Error>
                             // update doctor
                             let new_doctor = Doctor {
                                 hospital_id: hospital.id,
-                                name: doctor.name.clone(),
+                                name: payload.name.clone(),
                                 ..doctor.clone()
                             };
                             // update doctor in storage
@@ -716,7 +774,7 @@ fn add_doctor_to_hospital(payload: AddDoctorToHospital) -> Result<String, Error>
                             {
                                 Some(_) => Ok(format!(
                                     "Succesfully assigned doctor {} to hospital: {} ",
-                                    doctor.name, hospital.name
+                                    payload.name, hospital.name
                                 )),
                                 None => Err(Error::InvalidPayload {
                                     msg: format!("Could not update doctor"),
